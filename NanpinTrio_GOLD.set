@@ -1,4 +1,4 @@
-; NanpinTrio gold (XS cent) - trend + one averaging step
+; NanpinTrio gold (XS cent) - trend + one averaging step + break-even/trailing stop
 BasketRiskPct=3.0
 MaxLevels=2
 StepATR=0.5
@@ -10,6 +10,10 @@ StopATR=0.5
 CooldownHours=12.0
 TrendFilter=1
 TrendMAPeriod=200
+TrendSlopeBars=6
+BE_ATR=2.0
+TrailStart_ATR=6.0
+TrailDist_ATR=4.0
 UseRSI=true
 UseCross=true
 UseBreakout=true

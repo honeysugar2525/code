@@ -4,9 +4,9 @@
 //|   ゴールド(XS セント口座)・BTC(Exness スタンダード) 共用             |
 //+------------------------------------------------------------------+
 #property copyright "NanpinTrio"
-#property version   "1.10"
+#property version   "1.20"
 #property description "3つのシグナル(RSIゾーン / MAクロス / 抵抗帯・支持帯ブレイク)でトレンド方向に入り、"
-#property description "逆行したら1回だけナンピン。損切りは浅く、利確は遠く置きます(既定値は金向け)。"
+#property description "逆行したら1回だけナンピン。損切りは浅く、利確は遠く、含み益が乗ったら損切りを引き上げます(既定値は金向け)。"
 #property description "幅はすべてATR基準なので、ゴールドでもBTCでも同じ設定で動きます。"
 #property description "ヘッジ口座専用。テスターは「全ティック(リアルティック)」で検証してください。"
 
@@ -60,6 +60,7 @@ input group "◎ トレンドフィルター"
 input ENUM_TREND_FILTER TrendFilter     = TREND_ALIGN; // フィルターの使い方
 input ENUM_TIMEFRAMES TrendTF           = PERIOD_H1;   // トレンドを見る足
 input int             TrendMAPeriod     = 200;         // トレンドEMA期間
+input int             TrendSlopeBars    = 6;           // EMAの傾きを確認する本数(0=無効)。この本数前より上向きなら買いだけ
 
 //--- ナンピン
 input group "◎ ナンピン(幅は ATR × 倍率)"
@@ -74,6 +75,12 @@ input double          TP_ATR            = 8.0;         // 利確幅(初回のみ
 input double          TPNanpin_ATR      = 2.0;         // 利確幅(ナンピン後・平均建値から)
 input double          StopATR           = 0.5;         // 最終ナンピンからの損切り幅
 input double          CooldownHours     = 12.0;        // 損切り後に新規を休む時間
+
+//--- 決済の追加ロジック
+input group "◎ 含み益が乗った後の損切り引き上げ(幅は ATR × 倍率)"
+input double          BE_ATR            = 2.0;         // 建値ストップ: 含み益がこの幅になったら損切りを平均建値へ(0=無効)
+input double          TrailStart_ATR    = 6.0;         // トレール開始: 含み益がこの幅になったら追従を始める(0=無効)
+input double          TrailDist_ATR     = 4.0;         // トレール幅: 現在値からこの幅だけ離して損切りを追従
 
 //--- フィルター・安全装置
 input group "◎ フィルター・安全装置"
@@ -101,6 +108,7 @@ datetime g_lastBar         = 0;
 bool     g_closing[2]      = {false,false};
 datetime g_lastAddTry[2]   = {0,0};
 datetime g_modFail[2]      = {0,0};
+bool     g_stopMoved[2]    = {false,false};   // 損切りを引き上げ済みか(引き上げ後の決済では休止しない)
 datetime g_cooldownUntil   = 0;
 bool     g_halted          = false;
 bool     g_weekendTrading  = false;
@@ -130,6 +138,8 @@ int Idx(ENUM_POSITION_TYPE type) { return (type==POSITION_TYPE_BUY) ? 0 : 1; }
 string GVName(string key) { return g_prefix+key; }
 
 string AtrKey(ENUM_POSITION_TYPE type) { return (type==POSITION_TYPE_BUY) ? "atrB" : "atrS"; }
+
+string StopKey(ENUM_POSITION_TYPE type) { return (type==POSITION_TYPE_BUY) ? "stpB" : "stpS"; }
 
 bool GetBuf(int handle,int start,int count,double &out[])
   {
@@ -391,7 +401,21 @@ void SyncStops(ENUM_POSITION_TYPE type,double sl,double tp)
      }
   }
 
-// 毎ティック: 利確・損切り・ナンピン・TP/SL同期
+// 現在の損切り価格。引き上げ済みならその値、まだなら最初の損切りライン
+double CurrentStop(ENUM_POSITION_TYPE type,double baseStop)
+  {
+   string key=GVName(StopKey(type));
+   if(!GlobalVariableCheck(key))
+      return baseStop;
+   double v=GlobalVariableGet(key);
+   if(v<=0.0)
+      return baseStop;
+   if(type==POSITION_TYPE_BUY)
+      return MathMax(v,baseStop);
+   return MathMin(v,baseStop);
+  }
+
+// 毎ティック: 利確・損切り・ナンピン・損切り引き上げ・TP/SL同期
 void ManageBasket(ENUM_POSITION_TYPE type)
   {
    int ix=Idx(type);
@@ -403,6 +427,8 @@ void ManageBasket(ENUM_POSITION_TYPE type)
       g_closing[ix]=false;
       if(GlobalVariableCheck(key))
          GlobalVariableDel(key);
+      if(GlobalVariableCheck(GVName(StopKey(type))))
+         GlobalVariableDel(GVName(StopKey(type)));
       return;
      }
    if(g_closing[ix])
@@ -426,8 +452,10 @@ void ManageBasket(ENUM_POSITION_TYPE type)
    double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
    double exitPx=(type==POSITION_TYPE_BUY) ? bid : ask;   // 決済される側の価格
    double addPx =(type==POSITION_TYPE_BUY) ? ask : bid;   // 追加で建つ側の価格
-   double stopPrice=b.firstPrice-dir*atrb*StopOffset();
+   double baseStop=b.firstPrice-dir*atrb*StopOffset();
+   double stopPrice=CurrentStop(type,baseStop);
    double tpPrice=b.avg+dir*atrb*((b.n<=1) ? TP_ATR : TPNanpin_ATR);
+   g_stopMoved[ix]=((stopPrice-baseStop)*dir>_Point*0.5);
 
    bool hitTP=(dir>0.0) ? (exitPx>=tpPrice) : (exitPx<=tpPrice);
    bool hitSL=(dir>0.0) ? (exitPx<=stopPrice) : (exitPx>=stopPrice);
@@ -439,10 +467,28 @@ void ManageBasket(ENUM_POSITION_TYPE type)
      }
    if(hitSL)
      {
-      Print("NanpinTrio: 損切り ",(dir>0.0 ? "BUY" : "SELL")," 段数=",b.n," 損益=",DoubleToString(b.profit,2));
+      Print("NanpinTrio: ",(g_stopMoved[ix] ? "引き上げた損切りで決済 " : "損切り "),(dir>0.0 ? "BUY" : "SELL")," 段数=",b.n," 損益=",DoubleToString(b.profit,2));
       CloseBasket(type,"SL");
-      StartCooldown("損切りライン到達");
+      if(!g_stopMoved[ix])
+         StartCooldown("損切りライン到達");
       return;
+     }
+   // 含み益が乗ったら損切りを引き上げる(建値ストップ → トレール)。一度上げたら下げない
+   double gain=(exitPx-b.avg)*dir;
+   double newStop=stopPrice;
+   if(BE_ATR>0.0 && gain>=BE_ATR*atrb && (b.avg-newStop)*dir>0.0)
+      newStop=b.avg;
+   if(TrailStart_ATR>0.0 && TrailDist_ATR>0.0 && gain>=TrailStart_ATR*atrb)
+     {
+      double cand=exitPx-dir*TrailDist_ATR*atrb;
+      if((cand-newStop)*dir>=0.1*atrb)   // 細かく動かしすぎない
+         newStop=cand;
+     }
+   if(newStop!=stopPrice)
+     {
+      stopPrice=newStop;
+      GlobalVariableSet(GVName(StopKey(type)),stopPrice);
+      g_stopMoved[ix]=true;
      }
    // ナンピン
    if(b.n<MaxLevels && !g_halted)
@@ -613,6 +659,8 @@ void OpenFirst(ENUM_POSITION_TYPE type,string tag)
       Print("NanpinTrio: 自動ロットが最小未満のため最小ロットで発注。想定最大損失=残高の",
             DoubleToString(EstRiskPct(lot,atr),1),"%");
    GlobalVariableSet(GVName(AtrKey(type)),atr);
+   GlobalVariableDel(GVName(StopKey(type)));
+   g_stopMoved[Idx(type)]=false;
    if(OpenOrder(type,lot,"NT-"+tag))
       g_lastNote="";
   }
@@ -671,6 +719,15 @@ void CheckSignals()
       if(c1<=tm[0]) buy=false;
       if(c1>=tm[0]) sell=false;
      }
+   // EMAの傾き: 上向きなら買いだけ、下向きなら売りだけ
+   if(TrendSlopeBars>0)
+     {
+      double sl[];
+      if(!GetBuf(hTrend,1,TrendSlopeBars+1,sl))
+         return;
+      if(sl[0]<=sl[TrendSlopeBars]) buy=false;
+      if(sl[0]>=sl[TrendSlopeBars]) sell=false;
+     }
    if(buy && sell)
      {
       g_lastSignal="買い("+buyTag+")と売り("+sellTag+")が同時→見送り";
@@ -678,7 +735,7 @@ void CheckSignals()
      }
    if(!buy && !sell)
      {
-      g_lastSignal=((buyTag!="") ? "買い("+buyTag+")" : "売り("+sellTag+")")+" トレンド逆で見送り";
+      g_lastSignal=((buyTag!="") ? "買い("+buyTag+")" : "売り("+sellTag+")")+" トレンドが合わず見送り";
       return;
      }
    g_lastSignal=buy ? "買い("+buyTag+")" : "売り("+sellTag+")";
@@ -755,10 +812,12 @@ string BasketLine(ENUM_POSITION_TYPE type,string label)
    string key=GVName(AtrKey(type));
    double atrb=GlobalVariableCheck(key) ? GlobalVariableGet(key) : GridATR();
    double dir=(type==POSITION_TYPE_BUY) ? 1.0 : -1.0;
-   double stopPrice=b.firstPrice-dir*atrb*StopOffset();
+   double baseStop=b.firstPrice-dir*atrb*StopOffset();
+   double stopPrice=CurrentStop(type,baseStop);
+   bool moved=((stopPrice-baseStop)*dir>_Point*0.5);
    double tpPrice=b.avg+dir*atrb*((b.n<=1) ? TP_ATR : TPNanpin_ATR);
    string txt=label+": "+IntegerToString(b.n)+"/"+IntegerToString(MaxLevels)+"段  "+DoubleToString(b.lots,2)+"ロット  含み "+DoubleToString(b.profit,2)+"\n";
-   txt+="   平均 "+DoubleToString(b.avg,_Digits)+"  利確 "+DoubleToString(tpPrice,_Digits)+"  損切り "+DoubleToString(stopPrice,_Digits)+"\n";
+   txt+="   平均 "+DoubleToString(b.avg,_Digits)+"  利確 "+DoubleToString(tpPrice,_Digits)+"  損切り "+DoubleToString(stopPrice,_Digits)+(moved ? "(引き上げ済み)" : "")+"\n";
    if(b.n<MaxLevels)
       txt+="   次のナンピン "+DoubleToString(b.firstPrice-dir*atrb*LevelOffset(b.n),_Digits)+"\n";
    return txt;
@@ -806,6 +865,7 @@ int OnInit()
    if(MaxLevels<1 || MaxLevels>15 || LotMult<1.0 || StepATR<=0.0 || StepGrow<=0.0 || StopATR<=0.0 ||
       TP_ATR<=0.0 || TPNanpin_ATR<=0.0 || MA_Fast<1 || MA_Slow<=MA_Fast || RSI_Period<2 ||
       BO_Pivot<1 || BO_Lookback<BO_Pivot*2+10 || BO_MinTouches<1 || TrendMAPeriod<2 || GridATRPeriod<2 ||
+      TrendSlopeBars<0 || BE_ATR<0.0 || TrailStart_ATR<0.0 || (TrailStart_ATR>0.0 && TrailDist_ATR<=0.0) ||
       (FixedBaseLot<=0.0 && BasketRiskPct<=0.0))
      {
       Alert("NanpinTrio: パラメータが不正です。値を見直してください");
@@ -889,6 +949,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
       return;
    long magic=HistoryDealGetInteger(deal,DEAL_MAGIC);
    long posId=HistoryDealGetInteger(deal,DEAL_POSITION_ID);
+   // 売りの約定で閉じた=買いバスケット
+   int side=((ENUM_DEAL_TYPE)HistoryDealGetInteger(deal,DEAL_TYPE)==DEAL_TYPE_SELL) ? 0 : 1;
    if(magic!=MagicNumber)
      {
       // 決済側の約定にマジックが付かない証券会社向けに、建てた側の約定で確認する
@@ -912,7 +974,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
       if(!mine)
          return;
      }
-   if(TimeCurrent()>=g_cooldownUntil)
+   // 損切りを引き上げた後の決済なら休止しない
+   if(!g_stopMoved[side] && TimeCurrent()>=g_cooldownUntil)
       StartCooldown("証券会社側SL");
   }
 //+------------------------------------------------------------------+
