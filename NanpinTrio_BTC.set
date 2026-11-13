@@ -1,0 +1,11 @@
+; NanpinTrio BTC (Exness standard) - trend only, no averaging. Weak evidence.
+BasketRiskPct=2.0
+MaxLevels=1
+TP_ATR=12.0
+StopATR=1.5
+CooldownHours=0.0
+TrendFilter=1
+TrendMAPeriod=400
+UseRSI=true
+UseCross=true
+UseBreakout=false

@@ -4,9 +4,9 @@
 //|   ゴールド(XS セント口座)・BTC(Exness スタンダード) 共用             |
 //+------------------------------------------------------------------+
 #property copyright "NanpinTrio"
-#property version   "1.00"
-#property description "3つのシグナル(RSIゾーン / MAクロス / 抵抗帯・支持帯ブレイク)で初回エントリーし、"
-#property description "逆行したらATR幅でナンピン、平均建値+αで全決済するEAです。"
+#property version   "1.10"
+#property description "3つのシグナル(RSIゾーン / MAクロス / 抵抗帯・支持帯ブレイク)でトレンド方向に入り、"
+#property description "逆行したら1回だけナンピン。損切りは浅く、利確は遠く置きます(既定値は金向け)。"
 #property description "幅はすべてATR基準なので、ゴールドでもBTCでも同じ設定で動きます。"
 #property description "ヘッジ口座専用。テスターは「全ティック(リアルティック)」で検証してください。"
 
@@ -20,7 +20,7 @@ enum ENUM_TREND_FILTER
 
 //--- 基本
 input group "◎ 基本設定(まずはここだけ)"
-input double          BasketRiskPct     = 30.0;        // 1バスケットの最大損失(残高の%) ※攻め度
+input double          BasketRiskPct     = 3.0;         // 1回の最大損失(残高の%) ※攻め度
 input double          FixedBaseLot      = 0.0;         // 初回ロット固定(0=上の%から自動計算)
 input bool            UseMinLotIfSmall  = true;        // 自動ロットが最小未満でも最小ロットで入る
 input ENUM_TIMEFRAMES SignalTF          = PERIOD_M15;  // シグナルを見る足
@@ -63,16 +63,16 @@ input int             TrendMAPeriod     = 200;         // トレンドEMA期間
 
 //--- ナンピン
 input group "◎ ナンピン(幅は ATR × 倍率)"
-input int             MaxLevels         = 6;           // 最大ポジション数(初回を含む)
+input int             MaxLevels         = 2;           // 最大ポジション数(初回を含む。1=ナンピンなし)
 input ENUM_TIMEFRAMES GridTF            = PERIOD_H1;   // 幅の基準にするATRの足
 input int             GridATRPeriod     = 14;          // ATR期間
-input double          StepATR           = 1.0;         // ナンピン幅(1回目)
+input double          StepATR           = 0.5;         // ナンピン幅(1回目)
 input double          StepGrow          = 1.3;         // ナンピン幅の拡大率(回ごと)
 input double          LotMult           = 1.5;         // ロット倍率(回ごと)
 input int             NanpinMinBars     = 1;           // ナンピン同士の最低間隔(シグナル足の本数)
-input double          TP_ATR            = 0.6;         // 利確幅(初回のみ保有時)
-input double          TPNanpin_ATR      = 0.35;        // 利確幅(ナンピン後・平均建値から)
-input double          StopATR           = 2.0;         // 最終ナンピンからの損切り幅
+input double          TP_ATR            = 8.0;         // 利確幅(初回のみ保有時)
+input double          TPNanpin_ATR      = 2.0;         // 利確幅(ナンピン後・平均建値から)
+input double          StopATR           = 0.5;         // 最終ナンピンからの損切り幅
 input double          CooldownHours     = 12.0;        // 損切り後に新規を休む時間
 
 //--- フィルター・安全装置
