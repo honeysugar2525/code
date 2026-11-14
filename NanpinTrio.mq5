@@ -4,9 +4,9 @@
 //|   ゴールド(XS セント口座)・BTC(Exness スタンダード) 共用             |
 //+------------------------------------------------------------------+
 #property copyright "NanpinTrio"
-#property version   "1.20"
-#property description "3つのシグナル(RSIゾーン / MAクロス / 抵抗帯・支持帯ブレイク)でトレンド方向に入り、"
-#property description "逆行したら1回だけナンピン。損切りは浅く、利確は遠く、含み益が乗ったら損切りを引き上げます(既定値は金向け)。"
+#property version   "1.30"
+#property description "MAクロスでトレンド方向に入り(RSI・抵抗帯ブレイク・ナンピンは任意でオン)、"
+#property description "損切りは浅く、利確は遠く、含み益が乗ったら損切りを引き上げます。既定値は金の実データで検証した設定です。"
 #property description "幅はすべてATR基準なので、ゴールドでもBTCでも同じ設定で動きます。"
 #property description "ヘッジ口座専用。テスターは「全ティック(リアルティック)」で検証してください。"
 
@@ -31,7 +31,7 @@ input bool            DrawZones         = true;        // 抵抗帯・支持帯�
 
 //--- シグナル1
 input group "◎ シグナル① RSI(ゾーンに入ったら逆張り)"
-input bool            UseRSI            = true;        // RSIシグナルを使う
+input bool            UseRSI            = false;       // RSIシグナルを使う(実データでは優位性なし)
 input int             RSI_Period        = 14;          // RSI期間
 input double          RSI_BuyLow        = 23.0;        // 買いゾーン下限
 input double          RSI_BuyHigh       = 30.0;        // 買いゾーン上限
@@ -48,7 +48,7 @@ input ENUM_MA_METHOD  MA_Method         = MODE_SMA;    // MAの種類
 
 //--- シグナル3
 input group "◎ シグナル③ 抵抗帯・支持帯ブレイク"
-input bool            UseBreakout       = true;        // ブレイクを使う
+input bool            UseBreakout       = false;       // ブレイクを使う(実データでは優位性なし)
 input int             BO_Lookback       = 120;         // 何本前まで高値・安値を探すか
 input int             BO_Pivot          = 3;           // 山・谷と見なす左右の本数
 input int             BO_MinTouches     = 2;           // 帯と見なす最低タッチ回数
@@ -64,7 +64,7 @@ input int             TrendSlopeBars    = 6;           // EMAの傾きを確認�
 
 //--- ナンピン
 input group "◎ ナンピン(幅は ATR × 倍率)"
-input int             MaxLevels         = 2;           // 最大ポジション数(初回を含む。1=ナンピンなし)
+input int             MaxLevels         = 1;           // 最大ポジション数(1=ナンピンなし。実データではナンピンは逆効果)
 input ENUM_TIMEFRAMES GridTF            = PERIOD_H1;   // 幅の基準にするATRの足
 input int             GridATRPeriod     = 14;          // ATR期間
 input double          StepATR           = 0.5;         // ナンピン幅(1回目)
@@ -73,14 +73,14 @@ input double          LotMult           = 1.5;         // ロット倍率(回ご
 input int             NanpinMinBars     = 1;           // ナンピン同士の最低間隔(シグナル足の本数)
 input double          TP_ATR            = 8.0;         // 利確幅(初回のみ保有時)
 input double          TPNanpin_ATR      = 2.0;         // 利確幅(ナンピン後・平均建値から)
-input double          StopATR           = 0.5;         // 最終ナンピンからの損切り幅
-input double          CooldownHours     = 12.0;        // 損切り後に新規を休む時間
+input double          StopATR           = 1.5;         // 損切り幅(ナンピンありの時は最終ナンピンから)
+input double          CooldownHours     = 4.0;         // 損切り後に新規を休む時間
 
 //--- 決済の追加ロジック
 input group "◎ 含み益が乗った後の損切り引き上げ(幅は ATR × 倍率)"
 input double          BE_ATR            = 2.0;         // 建値ストップ: 含み益がこの幅になったら損切りを平均建値へ(0=無効)
-input double          TrailStart_ATR    = 6.0;         // トレール開始: 含み益がこの幅になったら追従を始める(0=無効)
-input double          TrailDist_ATR     = 4.0;         // トレール幅: 現在値からこの幅だけ離して損切りを追従
+input double          TrailStart_ATR    = 4.0;         // トレール開始: 含み益がこの幅になったら追従を始める(0=無効)
+input double          TrailDist_ATR     = 3.0;         // トレール幅: 現在値からこの幅だけ離して損切りを追従
 
 //--- フィルター・安全装置
 input group "◎ フィルター・安全装置"

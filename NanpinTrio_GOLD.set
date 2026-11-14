@@ -1,19 +1,17 @@
-; NanpinTrio gold (XS cent) - trend + one averaging step + break-even/trailing stop
+; NanpinTrio gold - MA cross only, no averaging (validated on real ticks)
 BasketRiskPct=3.0
-MaxLevels=2
-StepATR=0.5
-StepGrow=1.3
-LotMult=1.5
+UseRSI=false
+UseCross=true
+UseBreakout=false
+MA_Fast=25
+MA_Slow=75
+MaxLevels=1
 TP_ATR=8.0
-TPNanpin_ATR=2.0
-StopATR=0.5
-CooldownHours=12.0
+StopATR=1.5
+CooldownHours=4.0
 TrendFilter=1
 TrendMAPeriod=200
 TrendSlopeBars=6
 BE_ATR=2.0
-TrailStart_ATR=6.0
-TrailDist_ATR=4.0
-UseRSI=true
-UseCross=true
-UseBreakout=true
+TrailStart_ATR=4.0
+TrailDist_ATR=3.0

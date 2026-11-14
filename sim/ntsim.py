@@ -102,7 +102,7 @@ def zones(h,l,c,atr,Lookback,Pivot,MinT,ZoneATR,BufATR):
     return bb,bs
 
 @njit(cache=True)
-def simulate(mt,mo,mh,ml,mc,first15,sigB,sigS,atrH,okEntry,spreadFrac,swapLong,swapShort,
+def simulate(mt,mo,mh,ml,mc,msp,first15,sigB,sigS,atrH,okEntry,maxSpreadATR,tstart,swapLong,swapShort,
              MaxLevels,StepATR,StepGrow,LotMult,TP_ATR,TPN_ATR,StopATR,cooldownSec,minAddSec,oneSide,BE_ATR,TrailStart,TrailDist):
     N=len(mt)
     off=np.zeros(MaxLevels); lotf=np.zeros(MaxLevels)
@@ -119,7 +119,7 @@ def simulate(mt,mo,mh,ml,mc,first15,sigB,sigS,atrH,okEntry,spreadFrac,swapLong,s
     cool=0; prevDay=mt[0]//86400
     pts=np.zeros(4)
     for k in range(N):
-        t=mt[k]; o=mo[k]; h=mh[k]; l=ml[k]; c=mc[k]; sp=spreadFrac*o
+        t=mt[k]; o=mo[k]; h=mh[k]; l=ml[k]; c=mc[k]; sp=msp[k]
         day=t//86400
         if day!=prevDay:
             nights=3.0 if (day+3)%7==3 else 1.0
@@ -127,7 +127,7 @@ def simulate(mt,mo,mh,ml,mc,first15,sigB,sigS,atrH,okEntry,spreadFrac,swapLong,s
             if n[1]>0: swp[1]+=lots[1]*swapShort*o*nights
             prevDay=day
         j=first15[k]
-        if j>=0 and t>=cool and okEntry[j] and atrH[j]>0:
+        if j>=0 and t>=cool and t>=tstart and okEntry[j] and atrH[j]>0 and (maxSpreadATR<=0 or sp<=maxSpreadATR*atrH[j]):
             if sigB[j]>0 and n[0]==0 and (not oneSide or n[1]==0):
                 n[0]=1; lots[0]=1.0; cost[0]=o+sp; first[0]=o+sp; atrb[0]=atrH[j]; lastAdd[0]=t; tin[0]=t; tag[0]=sigB[j]; swp[0]=0.0; minF[0]=0.0; dyn[0]=o+sp-atrH[j]*stopOff
             elif sigS[j]>0 and n[1]==0 and (not oneSide or n[0]==0):
@@ -143,7 +143,7 @@ def simulate(mt,mo,mh,ml,mc,first15,sigB,sigS,atrH,okEntry,spreadFrac,swapLong,s
                 if p1<p0:
                     while n[0]<MaxLevels:
                         lvl=first[0]-atrb[0]*off[n[0]]
-                        if p1<=lvl-sp and t-lastAdd[0]>=minAddSec:
+                        if p1<=lvl-sp and t-lastAdd[0]>=minAddSec and (maxSpreadATR<=0 or sp<=maxSpreadATR*atrb[0]):
                             fa=min(lvl,p0+sp); cost[0]+=lotf[n[0]]*fa; lots[0]+=lotf[n[0]]; n[0]+=1; lastAdd[0]=t
                             if minAddSec>0: break
                         else: break
@@ -171,7 +171,7 @@ def simulate(mt,mo,mh,ml,mc,first15,sigB,sigS,atrH,okEntry,spreadFrac,swapLong,s
                 if p1>p0:
                     while n[1]<MaxLevels:
                         lvl=first[1]+atrb[1]*off[n[1]]
-                        if p1>=lvl and t-lastAdd[1]>=minAddSec:
+                        if p1>=lvl and t-lastAdd[1]>=minAddSec and (maxSpreadATR<=0 or sp<=maxSpreadATR*atrb[1]):
                             fb=max(lvl,p0); cost[1]+=lotf[n[1]]*fb; lots[1]+=lotf[n[1]]; n[1]+=1; lastAdd[1]=t
                             if minAddSec>0: break
                         else: break
@@ -196,14 +196,15 @@ def simulate(mt,mo,mh,ml,mc,first15,sigB,sigS,atrH,okEntry,spreadFrac,swapLong,s
     return rec[:nr],RU,stopOff
 
 class Market:
-    def __init__(self,path,gold):
-        a=np.load(path); t=a[:,0].astype('int64')
-        srv=pd.to_datetime(t,unit='s',utc=True).tz_convert('Europe/Athens').tz_localize(None)   # サーバー時間(GMT+2/+3)
+    def __init__(self,path,gold,tz='Europe/Athens',arr=None,sp=None):
+        a=np.load(path) if arr is None else arr; t=a[:,0].astype('int64')
+        srv=pd.to_datetime(t,unit='s',utc=True).tz_convert(tz).tz_localize(None)   # サーバー時間(GMT+2/+3)
         ts=srv.values.astype('datetime64[s]').astype('int64')
         keep=np.ones(len(t),bool)
         if gold: keep=srv.weekday.values<5       # 金は土日を除く
         self.gold=gold
         self.mt=ts[keep]; self.mo=a[keep,1]; self.mh=a[keep,2]; self.ml=a[keep,3]; self.mc=a[keep,4]
+        self.msp=None if sp is None else sp[keep]
         df=pd.DataFrame(dict(t=self.mt,o=self.mo,h=self.mh,l=self.ml,c=self.mc))
         def agg(sec):
             g=df.groupby(df.t//sec)
@@ -275,9 +276,10 @@ class Market:
                 okE&=~(((hr>=A)&(hr<B)) if A<B else ((hr>=A)|(hr<B)))
             if P['FridayStopHour']<24: okE&=~((wd==4)&(hr>=P['FridayStopHour']))
         return tb.astype('int64'),tsl.astype('int64'),np.nan_to_num(aJ),okE
-    def run(self,P,spreadFrac,swapLong=0.0,swapShort=0.0):
+    def run(self,P,spreadFrac=0.0,swapLong=0.0,swapShort=0.0,spMult=1.0,spAdd=0.0,tstart=0,maxSpreadATR=0.0):
         tb,tsl,aJ,okE=self.signals(P)
-        rec,RU,stopOff=simulate(self.mt,self.mo,self.mh,self.ml,self.mc,self.first15,tb,tsl,aJ,okE,spreadFrac,swapLong,swapShort,
+        msp=self.mo*spreadFrac if self.msp is None else self.msp*spMult+spAdd
+        rec,RU,stopOff=simulate(self.mt,self.mo,self.mh,self.ml,self.mc,msp,self.first15,tb,tsl,aJ,okE,maxSpreadATR,tstart,swapLong,swapShort,
             P['MaxLevels'],P['StepATR'],P['StepGrow'],P['LotMult'],P['TP_ATR'],P['TPNanpin_ATR'],P['StopATR'],
             int(P['CooldownHours']*3600),int(900*P['NanpinMinBars']),P['OneSideOnly'],P['BE_ATR'],P['TrailStart_ATR'],P['TrailDist_ATR'])
         d=pd.DataFrame(rec,columns=['tin','tout','dir','tag','n','R','atr','first','exit','minF'])
