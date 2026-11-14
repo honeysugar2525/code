@@ -4,9 +4,9 @@
 //|   ゴールド(XS セント口座)・BTC(Exness スタンダード) 共用             |
 //+------------------------------------------------------------------+
 #property copyright "NanpinTrio"
-#property version   "1.30"
-#property description "MAクロスでトレンド方向に入り(RSI・抵抗帯ブレイク・ナンピンは任意でオン)、"
-#property description "損切りは浅く、利確は遠く、含み益が乗ったら損切りを引き上げます。既定値は金の実データで検証した設定です。"
+#property version   "1.50"
+#property description "遅いMAクロス(75/225)でトレンド方向に入り(RSI・抵抗帯ブレイク・ナンピンは任意でオン)、"
+#property description "広めの損切りと遠い利確で、含み益が乗ったら損切りを建値へ移します。既定値は金の実データ6年分で検証した設定です。"
 #property description "幅はすべてATR基準なので、ゴールドでもBTCでも同じ設定で動きます。"
 #property description "ヘッジ口座専用。テスターは「全ティック(リアルティック)」で検証してください。"
 
@@ -42,8 +42,8 @@ input bool            RSI_OnEnterOnly   = true;        // ゾーンに入った�
 //--- シグナル2
 input group "◎ シグナル② ゴールデンクロス / デッドクロス"
 input bool            UseCross          = true;        // MAクロスを使う
-input int             MA_Fast           = 25;          // 短期MA
-input int             MA_Slow           = 75;          // 長期MA
+input int             MA_Fast           = 75;          // 短期MA
+input int             MA_Slow           = 225;         // 長期MA
 input ENUM_MA_METHOD  MA_Method         = MODE_SMA;    // MAの種類
 
 //--- シグナル3
@@ -73,18 +73,19 @@ input double          LotMult           = 1.5;         // ロット倍率(回ご
 input int             NanpinMinBars     = 1;           // ナンピン同士の最低間隔(シグナル足の本数)
 input double          TP_ATR            = 8.0;         // 利確幅(初回のみ保有時)
 input double          TPNanpin_ATR      = 2.0;         // 利確幅(ナンピン後・平均建値から)
-input double          StopATR           = 1.5;         // 損切り幅(ナンピンありの時は最終ナンピンから)
+input double          StopATR           = 3.0;         // 損切り幅(ナンピンありの時は最終ナンピンから)
 input double          CooldownHours     = 4.0;         // 損切り後に新規を休む時間
 
 //--- 決済の追加ロジック
 input group "◎ 含み益が乗った後の損切り引き上げ(幅は ATR × 倍率)"
-input double          BE_ATR            = 2.0;         // 建値ストップ: 含み益がこの幅になったら損切りを平均建値へ(0=無効)
-input double          TrailStart_ATR    = 4.0;         // トレール開始: 含み益がこの幅になったら追従を始める(0=無効)
+input double          BE_ATR            = 3.0;         // 建値ストップ: 含み益がこの幅になったら損切りを平均建値へ(0=無効)
+input double          TrailStart_ATR    = 0.0;         // トレール開始: 含み益がこの幅になったら追従を始める(0=無効)
 input double          TrailDist_ATR     = 3.0;         // トレール幅: 現在値からこの幅だけ離して損切りを追従
 
 //--- フィルター・安全装置
 input group "◎ フィルター・安全装置"
 input double          MaxSpreadATR      = 0.15;        // 許容スプレッド(ATRの倍率, 0=無制限)
+input double          MinDailyATRpct    = 0.0;         // 日足ATR(14)÷価格×100 がこの値以上の時だけ新規(0=無効)。速い設定では1.6
 input bool            UseTimeFilter     = true;        // ロールオーバー前後は新規停止(土日も動く銘柄では無効)
 input int             NoEntryFromHour   = 23;          // 新規停止の開始時(サーバー時間)
 input int             NoEntryToHour     = 2;           // 新規停止の終了時(サーバー時間)
@@ -102,6 +103,7 @@ int      hSlow    = INVALID_HANDLE;
 int      hTrend   = INVALID_HANDLE;
 int      hAtrSig  = INVALID_HANDLE;
 int      hAtrGrid = INVALID_HANDLE;
+int      hAtrD1   = INVALID_HANDLE;
 
 string   g_prefix          = "";
 datetime g_lastBar         = 0;
@@ -115,6 +117,7 @@ bool     g_weekendTrading  = false;
 double   g_resLevel        = 0.0;
 double   g_supLevel        = 0.0;
 double   g_lastRSI         = 0.0;
+double   g_dayVol          = 0.0;             // 日足ATR(14)÷前日終値×100
 string   g_lastSignal      = "-";
 string   g_lastNote        = "";
 datetime g_lastPanel       = 0;
@@ -678,6 +681,12 @@ void CheckSignals()
    if(c1<=0.0)
       return;
    g_lastRSI=rsi[0];
+   // 値動きの大きさ(確定済みの前日までの日足で計算)
+   double da[];
+   double dc=iClose(_Symbol,PERIOD_D1,1);
+   bool dayVolOK=(GetBuf(hAtrD1,1,1,da) && dc>0.0);
+   if(dayVolOK)
+      g_dayVol=da[0]/dc*100.0;
 
    // ① RSI
    bool inBuy1 =(rsi[0]>=RSI_BuyLow  && rsi[0]<=RSI_BuyHigh);
@@ -743,6 +752,11 @@ void CheckSignals()
 
    if(g_halted)
       return;
+   if(MinDailyATRpct>0.0 && (!dayVolOK || g_dayVol<MinDailyATRpct))
+     {
+      g_lastNote="値動きが小さいため見送り(日足ATR "+DoubleToString(g_dayVol,2)+"% < "+DoubleToString(MinDailyATRpct,2)+"%)";
+      return;
+     }
    if(TimeCurrent()<g_cooldownUntil)
      {
       g_lastNote="損切り後の休止中";
@@ -842,7 +856,7 @@ void UpdatePanel()
    if(tooSmall)
       txt+="  ※残高が小さく設定%を超えています";
    txt+="\n";
-   txt+="ATR "+DoubleToString(atr,_Digits)+"  損切りまで "+DoubleToString(atr*StopOffset(),_Digits)+"  RSI "+DoubleToString(g_lastRSI,1)+"\n";
+   txt+="ATR "+DoubleToString(atr,_Digits)+"  損切りまで "+DoubleToString(atr*StopOffset(),_Digits)+"  日足ATR "+DoubleToString(g_dayVol,2)+"%"+((MinDailyATRpct>0.0) ? ((g_dayVol>=MinDailyATRpct) ? "(稼働)" : "(待機)") : "")+"\n";
    txt+="抵抗帯 "+((g_resLevel>0.0) ? DoubleToString(g_resLevel,_Digits) : "-")+"  支持帯 "+((g_supLevel>0.0) ? DoubleToString(g_supLevel,_Digits) : "-")+"\n";
    txt+="直近シグナル: "+g_lastSignal+"\n";
    if(g_lastNote!="")
@@ -866,7 +880,7 @@ int OnInit()
       TP_ATR<=0.0 || TPNanpin_ATR<=0.0 || MA_Fast<1 || MA_Slow<=MA_Fast || RSI_Period<2 ||
       BO_Pivot<1 || BO_Lookback<BO_Pivot*2+10 || BO_MinTouches<1 || TrendMAPeriod<2 || GridATRPeriod<2 ||
       TrendSlopeBars<0 || BE_ATR<0.0 || TrailStart_ATR<0.0 || (TrailStart_ATR>0.0 && TrailDist_ATR<=0.0) ||
-      (FixedBaseLot<=0.0 && BasketRiskPct<=0.0))
+      MinDailyATRpct<0.0 || (FixedBaseLot<=0.0 && BasketRiskPct<=0.0))
      {
       Alert("NanpinTrio: パラメータが不正です。値を見直してください");
       return INIT_PARAMETERS_INCORRECT;
@@ -882,8 +896,9 @@ int OnInit()
    hTrend  =iMA(_Symbol,TrendTF,TrendMAPeriod,0,MODE_EMA,PRICE_CLOSE);
    hAtrSig =iATR(_Symbol,SignalTF,14);
    hAtrGrid=iATR(_Symbol,GridTF,GridATRPeriod);
+   hAtrD1  =iATR(_Symbol,PERIOD_D1,14);
    if(hRSI==INVALID_HANDLE || hFast==INVALID_HANDLE || hSlow==INVALID_HANDLE ||
-      hTrend==INVALID_HANDLE || hAtrSig==INVALID_HANDLE || hAtrGrid==INVALID_HANDLE)
+      hTrend==INVALID_HANDLE || hAtrSig==INVALID_HANDLE || hAtrGrid==INVALID_HANDLE || hAtrD1==INVALID_HANDLE)
      {
       Alert("NanpinTrio: インジケーターの作成に失敗しました");
       return INIT_FAILED;
@@ -912,6 +927,7 @@ void OnDeinit(const int reason)
    if(hTrend!=INVALID_HANDLE)   IndicatorRelease(hTrend);
    if(hAtrSig!=INVALID_HANDLE)  IndicatorRelease(hAtrSig);
    if(hAtrGrid!=INVALID_HANDLE) IndicatorRelease(hAtrGrid);
+   if(hAtrD1!=INVALID_HANDLE)   IndicatorRelease(hAtrD1);
    ObjectDelete(0,g_prefix+"RES");
    ObjectDelete(0,g_prefix+"SUP");
    Comment("");

@@ -1,10 +1,12 @@
-; NanpinTrio gold - MA cross only, no averaging (validated on real ticks)
+; NanpinTrio gold FAST mode - trades only when daily ATR is at least 1.6% of price.
+MagicNumber=20261114
 BasketRiskPct=3.0
 UseRSI=false
 UseCross=true
 UseBreakout=false
 MA_Fast=25
 MA_Slow=75
+MA_Method=0
 MaxLevels=1
 TP_ATR=8.0
 StopATR=1.5
@@ -15,3 +17,4 @@ TrendSlopeBars=6
 BE_ATR=2.0
 TrailStart_ATR=4.0
 TrailDist_ATR=3.0
+MinDailyATRpct=1.6

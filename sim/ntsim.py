@@ -11,7 +11,8 @@ DEF=dict(RSI_Period=14,RSI_BuyLow=23.,RSI_BuyHigh=30.,RSI_SellLow=70.,RSI_SellHi
          UseTimeFilter=True,NoEntryFromHour=23,NoEntryToHour=2,FridayStopHour=20,
          ADX_Min=0.,ADX_Period=14,SlopeBars=0,H4MAPeriod=0,D1MAPeriod=0,VolRatioMin=0.,VolRatioMax=0.,VolLong=100,
          HourFrom=-1,HourTo=-1,MaxExtATR=0.,MinExtATR=0.,MinSignals=1,ConfluenceBars=8,NeedBarDir=False,
-         BE_ATR=0.,TrailStart_ATR=0.,TrailDist_ATR=0.,CooldownOnLossOnly=True)
+         BE_ATR=0.,TrailStart_ATR=0.,TrailDist_ATR=0.,CooldownOnLossOnly=True,
+         MA_EMA=False,UsePullback=False,PyrATR=0.,PyrLot=1.,PyrMax=0,PyrStopATR=1.5,Dir=0,D1VolMin=0.,D1VolMax=0.)
 
 @njit(cache=True)
 def rsi_wilder(c,n):
@@ -103,7 +104,7 @@ def zones(h,l,c,atr,Lookback,Pivot,MinT,ZoneATR,BufATR):
 
 @njit(cache=True)
 def simulate(mt,mo,mh,ml,mc,msp,first15,sigB,sigS,atrH,okEntry,maxSpreadATR,tstart,swapLong,swapShort,
-             MaxLevels,StepATR,StepGrow,LotMult,TP_ATR,TPN_ATR,StopATR,cooldownSec,minAddSec,oneSide,BE_ATR,TrailStart,TrailDist):
+             MaxLevels,StepATR,StepGrow,LotMult,TP_ATR,TPN_ATR,StopATR,cooldownSec,minAddSec,oneSide,BE_ATR,TrailStart,TrailDist,PyrATR,PyrLot,PyrMax,PyrStop):
     N=len(mt)
     off=np.zeros(MaxLevels); lotf=np.zeros(MaxLevels)
     for k in range(MaxLevels):
@@ -115,7 +116,7 @@ def simulate(mt,mo,mh,ml,mc,msp,first15,sigB,sigS,atrH,okEntry,maxSpreadATR,tsta
     for k in range(MaxLevels): RU+=lotf[k]*(stopOff-off[k])
     rec=np.zeros((300000,10)); nr=0
     n=np.zeros(2,np.int64); lots=np.zeros(2); cost=np.zeros(2); first=np.zeros(2); atrb=np.zeros(2)
-    lastAdd=np.zeros(2,np.int64); tin=np.zeros(2,np.int64); tag=np.zeros(2,np.int64); swp=np.zeros(2); minF=np.zeros(2); dyn=np.zeros(2)
+    lastAdd=np.zeros(2,np.int64); tin=np.zeros(2,np.int64); tag=np.zeros(2,np.int64); swp=np.zeros(2); minF=np.zeros(2); dyn=np.zeros(2); npyr=np.zeros(2,np.int64)
     cool=0; prevDay=mt[0]//86400
     pts=np.zeros(4)
     for k in range(N):
@@ -129,9 +130,9 @@ def simulate(mt,mo,mh,ml,mc,msp,first15,sigB,sigS,atrH,okEntry,maxSpreadATR,tsta
         j=first15[k]
         if j>=0 and t>=cool and t>=tstart and okEntry[j] and atrH[j]>0 and (maxSpreadATR<=0 or sp<=maxSpreadATR*atrH[j]):
             if sigB[j]>0 and n[0]==0 and (not oneSide or n[1]==0):
-                n[0]=1; lots[0]=1.0; cost[0]=o+sp; first[0]=o+sp; atrb[0]=atrH[j]; lastAdd[0]=t; tin[0]=t; tag[0]=sigB[j]; swp[0]=0.0; minF[0]=0.0; dyn[0]=o+sp-atrH[j]*stopOff
+                n[0]=1; lots[0]=1.0; cost[0]=o+sp; first[0]=o+sp; atrb[0]=atrH[j]; lastAdd[0]=t; tin[0]=t; tag[0]=sigB[j]; swp[0]=0.0; minF[0]=0.0; dyn[0]=o+sp-atrH[j]*stopOff; npyr[0]=0
             elif sigS[j]>0 and n[1]==0 and (not oneSide or n[0]==0):
-                n[1]=1; lots[1]=1.0; cost[1]=o; first[1]=o; atrb[1]=atrH[j]; lastAdd[1]=t; tin[1]=t; tag[1]=sigS[j]; swp[1]=0.0; minF[1]=0.0; dyn[1]=o+atrH[j]*stopOff
+                n[1]=1; lots[1]=1.0; cost[1]=o; first[1]=o; atrb[1]=atrH[j]; lastAdd[1]=t; tin[1]=t; tag[1]=sigS[j]; swp[1]=0.0; minF[1]=0.0; dyn[1]=o+atrH[j]*stopOff; npyr[1]=0
         if n[0]==0 and n[1]==0: continue
         if c>=o: pts[0]=o; pts[1]=l; pts[2]=h; pts[3]=c
         else:    pts[0]=o; pts[1]=h; pts[2]=l; pts[3]=c
@@ -153,7 +154,16 @@ def simulate(mt,mo,mh,ml,mc,msp,first15,sigB,sigS,atrH,okEntry,maxSpreadATR,tsta
                         f=(lots[0]*p1-cost[0]-swp[0])/(atrb[0]*RU)
                         if f<minF[0]: minF[0]=f
                 elif p1>p0:
-                    tp=cost[0]/lots[0]+atrb[0]*(TP_ATR if n[0]<=1 else TPN_ATR)
+                    # 増し玉(含み益方向に買い増し)
+                    while npyr[0]<PyrMax and n[0]==1:
+                        trig=first[0]+PyrATR*(npyr[0]+1)*atrb[0]
+                        if p1+sp>=trig:
+                            fa=max(trig,p0+sp); cost[0]+=PyrLot*fa; lots[0]+=PyrLot; npyr[0]+=1
+                            ns=fa-sp-PyrStop*atrb[0]
+                            if ns>dyn[0]: dyn[0]=ns
+                        else: break
+                    if npyr[0]>0: tp=first[0]+atrb[0]*TP_ATR
+                    else: tp=cost[0]/lots[0]+atrb[0]*(TP_ATR if n[0]<=1 else TPN_ATR)
                     if p1>=tp: ex=max(tp,p0); et=1
                     else:
                         avg=cost[0]/lots[0]
@@ -181,7 +191,15 @@ def simulate(mt,mo,mh,ml,mc,msp,first15,sigB,sigS,atrH,okEntry,maxSpreadATR,tsta
                         f=(cost[1]-lots[1]*(p1+sp)-swp[1])/(atrb[1]*RU)
                         if f<minF[1]: minF[1]=f
                 elif p1<p0:
-                    tp=cost[1]/lots[1]-atrb[1]*(TP_ATR if n[1]<=1 else TPN_ATR)
+                    while npyr[1]<PyrMax and n[1]==1:
+                        trig=first[1]-PyrATR*(npyr[1]+1)*atrb[1]
+                        if p1<=trig:
+                            fb=min(trig,p0); cost[1]+=PyrLot*fb; lots[1]+=PyrLot; npyr[1]+=1
+                            ns=fb+sp+PyrStop*atrb[1]
+                            if ns<dyn[1]: dyn[1]=ns
+                        else: break
+                    if npyr[1]>0: tp=first[1]-atrb[1]*TP_ATR
+                    else: tp=cost[1]/lots[1]-atrb[1]*(TP_ATR if n[1]<=1 else TPN_ATR)
                     if p1+sp<=tp: ex=min(tp,p0+sp); et=1
                     else:
                         avg=cost[1]/lots[1]; a1=p1+sp
@@ -196,7 +214,7 @@ def simulate(mt,mo,mh,ml,mc,msp,first15,sigB,sigS,atrH,okEntry,maxSpreadATR,tsta
     return rec[:nr],RU,stopOff
 
 class Market:
-    def __init__(self,path,gold,tz='Europe/Athens',arr=None,sp=None):
+    def __init__(self,path,gold,tz='Europe/Athens',arr=None,sp=None,sigsec=900):
         a=np.load(path) if arr is None else arr; t=a[:,0].astype('int64')
         srv=pd.to_datetime(t,unit='s',utc=True).tz_convert(tz).tz_localize(None)   # サーバー時間(GMT+2/+3)
         ts=srv.values.astype('datetime64[s]').astype('int64')
@@ -210,7 +228,7 @@ class Market:
             g=df.groupby(df.t//sec)
             r=pd.DataFrame(dict(t=g.t.first()//sec*sec,o=g.o.first(),h=g.h.max(),l=g.l.min(),c=g.c.last(),i0=g.apply(lambda x:x.index[0],include_groups=False)))
             return r.reset_index(drop=True)
-        self.b15=agg(900); self.b60=agg(3600); self.b240=agg(14400); self.bD=agg(86400)
+        self.sigsec=sigsec; self.b15=agg(sigsec); self.b60=agg(3600); self.b240=agg(14400); self.bD=agg(86400)
         self.h4idx=None
         self.first15=np.full(len(self.mt),-1,np.int64); self.first15[self.b15.i0.values]=np.arange(len(self.b15))
         # 各M15足の開始時点で確定済みの最後のH1足
@@ -220,7 +238,7 @@ class Market:
         self._z={}; self._atr15=atr_sma(self.b15.h.values,self.b15.l.values,self.b15.c.values,14)
     def signals(self,P):
         b=self.b15; c=b.c.values; N=len(c)
-        r=rsi_wilder(c,P['RSI_Period']); f=sma(c,P['MA_Fast']); s=sma(c,P['MA_Slow'])
+        r=rsi_wilder(c,P['RSI_Period']); mf=ema if P['MA_EMA'] else sma; f=mf(c,P['MA_Fast']); s=mf(c,P['MA_Slow'])
         sh=lambda x,k: np.concatenate([np.full(k,np.nan),x[:-k]])
         r1,r2,f1,f2,s1,s2,c1=sh(r,1),sh(r,2),sh(f,1),sh(f,2),sh(s,1),sh(s,2),sh(c,1)
         inB1=(r1>=P['RSI_BuyLow'])&(r1<=P['RSI_BuyHigh']); inB2=(r2>=P['RSI_BuyLow'])&(r2<=P['RSI_BuyHigh'])
@@ -231,7 +249,9 @@ class Market:
         zk=(P['BO_Lookback'],P['BO_Pivot'],P['BO_MinTouches'],P['BO_ZoneATR'],P['BO_BufferATR'])
         if zk not in self._z: self._z[zk]=zones(b.h.values,b.l.values,c,self._atr15,*zk)
         bb,bs=self._z[zk]; bb=bb&P['UseBreakout']; bs=bs&P['UseBreakout']
-        tb=rb*1+cb*2+bb*4; tsl=rs*1+cs*2+bs*4
+        c2=sh(c,2)
+        pbb=(f1>s1)&(c2<f2)&(c1>f1)&P['UsePullback']; pbs=(f1<s1)&(c2>f2)&(c1<f1)&P['UsePullback']
+        tb=rb*1+cb*2+bb*4+pbb*8; tsl=rs*1+cs*2+bs*4+pbs*8
         if P['MinSignals']>1:
             W=P['ConfluenceBars']; roll=lambda x: pd.Series(x.astype(float)).rolling(W,min_periods=1).max().values
             nb=roll(rb)+roll(cb)+roll(bb); ns=roll(rs)+roll(cs)+roll(bs)
@@ -265,6 +285,14 @@ class Market:
             if P['MaxExtATR']>0: tb=np.where(ext<=P['MaxExtATR'],tb,0); tsl=np.where(-ext<=P['MaxExtATR'],tsl,0)
             if P['MinExtATR']>0: tb=np.where(ext>=P['MinExtATR'],tb,0); tsl=np.where(-ext>=P['MinExtATR'],tsl,0)
         both=(tb>0)&(tsl>0); tb=np.where(both,0,tb); tsl=np.where(both,0,tsl)
+        if P['D1VolMin']>0 or P['D1VolMax']>0:
+            Dd=self.bD; dv=atr_sma(Dd.h.values,Dd.l.values,Dd.c.values,14)/Dd.c.values*100   # 日足ATR(14)÷終値×100 (確定済みの前日まで)
+            v=np.nan_to_num(dv[np.clip(self.didx,0,None)]); okv=self.didx>=14
+            if P['D1VolMin']>0: okv=okv&(v>=P['D1VolMin'])
+            if P['D1VolMax']>0: okv=okv&(v<P['D1VolMax'])
+            tb=np.where(okv,tb,0); tsl=np.where(okv,tsl,0)
+        if P['Dir']>0: tsl=np.zeros_like(tsl)
+        if P['Dir']<0: tb=np.zeros_like(tb)
         okE=np.ones(N,bool)
         if P['HourFrom']>=0 and P['HourFrom']!=P['HourTo']:
             hr0=(b.t.values%86400)//3600; A,B=P['HourFrom'],P['HourTo']
@@ -281,7 +309,7 @@ class Market:
         msp=self.mo*spreadFrac if self.msp is None else self.msp*spMult+spAdd
         rec,RU,stopOff=simulate(self.mt,self.mo,self.mh,self.ml,self.mc,msp,self.first15,tb,tsl,aJ,okE,maxSpreadATR,tstart,swapLong,swapShort,
             P['MaxLevels'],P['StepATR'],P['StepGrow'],P['LotMult'],P['TP_ATR'],P['TPNanpin_ATR'],P['StopATR'],
-            int(P['CooldownHours']*3600),int(900*P['NanpinMinBars']),P['OneSideOnly'],P['BE_ATR'],P['TrailStart_ATR'],P['TrailDist_ATR'])
+            int(P['CooldownHours']*3600),int(self.sigsec*P['NanpinMinBars']),P['OneSideOnly'],P['BE_ATR'],P['TrailStart_ATR'],P['TrailDist_ATR'],P['PyrATR'],P['PyrLot'],P['PyrMax'],P['PyrStopATR'])
         d=pd.DataFrame(rec,columns=['tin','tout','dir','tag','n','R','atr','first','exit','minF'])
         return d,RU,stopOff
 
