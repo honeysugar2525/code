@@ -12,7 +12,8 @@ DEF=dict(RSI_Period=14,RSI_BuyLow=23.,RSI_BuyHigh=30.,RSI_SellLow=70.,RSI_SellHi
          ADX_Min=0.,ADX_Period=14,SlopeBars=0,H4MAPeriod=0,D1MAPeriod=0,VolRatioMin=0.,VolRatioMax=0.,VolLong=100,
          HourFrom=-1,HourTo=-1,MaxExtATR=0.,MinExtATR=0.,MinSignals=1,ConfluenceBars=8,NeedBarDir=False,
          BE_ATR=0.,TrailStart_ATR=0.,TrailDist_ATR=0.,CooldownOnLossOnly=True,
-         MA_EMA=False,UsePullback=False,PyrATR=0.,PyrLot=1.,PyrMax=0,PyrStopATR=1.5,Dir=0,D1VolMin=0.,D1VolMax=0.)
+         MA_EMA=False,UsePullback=False,PyrATR=0.,PyrLot=1.,PyrMax=0,PyrStopATR=1.5,Dir=0,D1VolMin=0.,D1VolMax=0.,
+         CrossAngleATR=0.,PriceBeyond=False,H4RSIMin=0.,SkipDow=-1,D1CandleDir=False,SlowSlopeBars=0,MinSepBars=0,D1RSIMin=0.)
 
 @njit(cache=True)
 def rsi_wilder(c,n):
@@ -291,6 +292,23 @@ class Market:
             if P['D1VolMin']>0: okv=okv&(v>=P['D1VolMin'])
             if P['D1VolMax']>0: okv=okv&(v<P['D1VolMax'])
             tb=np.where(okv,tb,0); tsl=np.where(okv,tsl,0)
+        a15=sh(self._atr15,1)
+        if P['CrossAngleATR']>0:      # クロスの勢い: 1本でMAの差がどれだけ開いたか
+            ang=np.nan_to_num(((f1-s1)-(f2-s2))/np.where(a15>0,a15,np.nan)); tb=np.where(ang>=P['CrossAngleATR'],tb,0); tsl=np.where(-ang>=P['CrossAngleATR'],tsl,0)
+        if P['PriceBeyond']:          # 終値が両方のMAの外にある
+            tb=np.where((c1>f1)&(c1>s1),tb,0); tsl=np.where((c1<f1)&(c1<s1),tsl,0)
+        if P['SlowSlopeBars']>0:      # 長期MA自体が同じ向き
+            sp_=sh(s,1+P['SlowSlopeBars']); tb=np.where(s1>sp_,tb,0); tsl=np.where(s1<sp_,tsl,0)
+        if P['H4RSIMin']>0:
+            r4=rsi_wilder(self.b240.c.values,14)[np.clip(self.h4idx,0,None)]; r4=np.nan_to_num(r4,nan=50.0)
+            tb=np.where(r4>=P['H4RSIMin'],tb,0); tsl=np.where(r4<=100-P['H4RSIMin'],tsl,0)
+        if P['D1RSIMin']>0:
+            rD=rsi_wilder(self.bD.c.values,14)[np.clip(self.didx,0,None)]; rD=np.nan_to_num(rD,nan=50.0)
+            tb=np.where(rD>=P['D1RSIMin'],tb,0); tsl=np.where(rD<=100-P['D1RSIMin'],tsl,0)
+        if P['D1CandleDir']:          # 前日の日足が同じ向き
+            Dd=self.bD; up=(Dd.c.values>Dd.o.values)[np.clip(self.didx,0,None)]; tb=np.where(up,tb,0); tsl=np.where(~up,tsl,0)
+        if P['SkipDow']>=0:
+            wd0=((b.t.values//86400)+3)%7; m_=wd0!=P['SkipDow']; tb=np.where(m_,tb,0); tsl=np.where(m_,tsl,0)
         if P['Dir']>0: tsl=np.zeros_like(tsl)
         if P['Dir']<0: tb=np.zeros_like(tb)
         okE=np.ones(N,bool)

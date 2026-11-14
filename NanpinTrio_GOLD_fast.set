@@ -14,6 +14,7 @@ CooldownHours=4.0
 TrendFilter=1
 TrendMAPeriod=200
 TrendSlopeBars=6
+DailyMAPeriod=60
 BE_ATR=2.0
 TrailStart_ATR=4.0
 TrailDist_ATR=3.0

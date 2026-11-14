@@ -4,7 +4,7 @@
 //|   ゴールド(XS セント口座)・BTC(Exness スタンダード) 共用             |
 //+------------------------------------------------------------------+
 #property copyright "NanpinTrio"
-#property version   "1.50"
+#property version   "1.60"
 #property description "遅いMAクロス(75/225)でトレンド方向に入り(RSI・抵抗帯ブレイク・ナンピンは任意でオン)、"
 #property description "広めの損切りと遠い利確で、含み益が乗ったら損切りを建値へ移します。既定値は金の実データ6年分で検証した設定です。"
 #property description "幅はすべてATR基準なので、ゴールドでもBTCでも同じ設定で動きます。"
@@ -61,6 +61,7 @@ input ENUM_TREND_FILTER TrendFilter     = TREND_ALIGN; // フィルターの使�
 input ENUM_TIMEFRAMES TrendTF           = PERIOD_H1;   // トレンドを見る足
 input int             TrendMAPeriod     = 200;         // トレンドEMA期間
 input int             TrendSlopeBars    = 6;           // EMAの傾きを確認する本数(0=無効)。この本数前より上向きなら買いだけ
+input int             DailyMAPeriod     = 60;          // 日足EMAの期間(0=無効)。日足EMAより上なら買いだけ、下なら売りだけ
 
 //--- ナンピン
 input group "◎ ナンピン(幅は ATR × 倍率)"
@@ -104,6 +105,7 @@ int      hTrend   = INVALID_HANDLE;
 int      hAtrSig  = INVALID_HANDLE;
 int      hAtrGrid = INVALID_HANDLE;
 int      hAtrD1   = INVALID_HANDLE;
+int      hD1MA    = INVALID_HANDLE;
 
 string   g_prefix          = "";
 datetime g_lastBar         = 0;
@@ -737,6 +739,15 @@ void CheckSignals()
       if(sl[0]<=sl[TrendSlopeBars]) buy=false;
       if(sl[0]>=sl[TrendSlopeBars]) sell=false;
      }
+   // 日足のトレンド: 確定済みの日足EMAより上なら買いだけ、下なら売りだけ
+   if(DailyMAPeriod>0)
+     {
+      double dm[];
+      if(!GetBuf(hD1MA,1,1,dm))
+         return;
+      if(c1<=dm[0]) buy=false;
+      if(c1>=dm[0]) sell=false;
+     }
    if(buy && sell)
      {
       g_lastSignal="買い("+buyTag+")と売り("+sellTag+")が同時→見送り";
@@ -880,7 +891,7 @@ int OnInit()
       TP_ATR<=0.0 || TPNanpin_ATR<=0.0 || MA_Fast<1 || MA_Slow<=MA_Fast || RSI_Period<2 ||
       BO_Pivot<1 || BO_Lookback<BO_Pivot*2+10 || BO_MinTouches<1 || TrendMAPeriod<2 || GridATRPeriod<2 ||
       TrendSlopeBars<0 || BE_ATR<0.0 || TrailStart_ATR<0.0 || (TrailStart_ATR>0.0 && TrailDist_ATR<=0.0) ||
-      MinDailyATRpct<0.0 || (FixedBaseLot<=0.0 && BasketRiskPct<=0.0))
+      MinDailyATRpct<0.0 || DailyMAPeriod<0 || (FixedBaseLot<=0.0 && BasketRiskPct<=0.0))
      {
       Alert("NanpinTrio: パラメータが不正です。値を見直してください");
       return INIT_PARAMETERS_INCORRECT;
@@ -897,8 +908,11 @@ int OnInit()
    hAtrSig =iATR(_Symbol,SignalTF,14);
    hAtrGrid=iATR(_Symbol,GridTF,GridATRPeriod);
    hAtrD1  =iATR(_Symbol,PERIOD_D1,14);
+   if(DailyMAPeriod>0)
+      hD1MA=iMA(_Symbol,PERIOD_D1,DailyMAPeriod,0,MODE_EMA,PRICE_CLOSE);
    if(hRSI==INVALID_HANDLE || hFast==INVALID_HANDLE || hSlow==INVALID_HANDLE ||
-      hTrend==INVALID_HANDLE || hAtrSig==INVALID_HANDLE || hAtrGrid==INVALID_HANDLE || hAtrD1==INVALID_HANDLE)
+      hTrend==INVALID_HANDLE || hAtrSig==INVALID_HANDLE || hAtrGrid==INVALID_HANDLE || hAtrD1==INVALID_HANDLE ||
+      (DailyMAPeriod>0 && hD1MA==INVALID_HANDLE))
      {
       Alert("NanpinTrio: インジケーターの作成に失敗しました");
       return INIT_FAILED;
@@ -928,6 +942,7 @@ void OnDeinit(const int reason)
    if(hAtrSig!=INVALID_HANDLE)  IndicatorRelease(hAtrSig);
    if(hAtrGrid!=INVALID_HANDLE) IndicatorRelease(hAtrGrid);
    if(hAtrD1!=INVALID_HANDLE)   IndicatorRelease(hAtrD1);
+   if(hD1MA!=INVALID_HANDLE)    IndicatorRelease(hD1MA);
    ObjectDelete(0,g_prefix+"RES");
    ObjectDelete(0,g_prefix+"SUP");
    Comment("");
