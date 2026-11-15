@@ -1,0 +1,25 @@
+; [with one averaging step, 3.5 USD below entry] NanpinTrio gold FAST mode - trades only when daily ATR is at least 1.6% of price.
+MagicNumber=20261114
+BasketRiskPct=3.0
+UseRSI=false
+UseCross=true
+UseBreakout=false
+MA_Fast=25
+MA_Slow=75
+MA_Method=0
+MaxLevels=2
+StepPrice=3.5
+StepGrow=1.3
+LotMult=1.0
+TPNanpin_ATR=8.0
+TP_ATR=8.0
+StopATR=1.0
+CooldownHours=4.0
+TrendFilter=1
+TrendMAPeriod=200
+TrendSlopeBars=6
+DailyMAPeriod=60
+BE_ATR=2.0
+TrailStart_ATR=4.0
+TrailDist_ATR=3.0
+MinDailyATRpct=1.6

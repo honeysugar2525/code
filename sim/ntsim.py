@@ -13,7 +13,7 @@ DEF=dict(RSI_Period=14,RSI_BuyLow=23.,RSI_BuyHigh=30.,RSI_SellLow=70.,RSI_SellHi
          HourFrom=-1,HourTo=-1,MaxExtATR=0.,MinExtATR=0.,MinSignals=1,ConfluenceBars=8,NeedBarDir=False,
          BE_ATR=0.,TrailStart_ATR=0.,TrailDist_ATR=0.,CooldownOnLossOnly=True,
          MA_EMA=False,UsePullback=False,PyrATR=0.,PyrLot=1.,PyrMax=0,PyrStopATR=1.5,Dir=0,D1VolMin=0.,D1VolMax=0.,
-         CrossAngleATR=0.,PriceBeyond=False,H4RSIMin=0.,SkipDow=-1,D1CandleDir=False,SlowSlopeBars=0,MinSepBars=0,D1RSIMin=0.)
+         StepAbs=0.,CrossAngleATR=0.,PriceBeyond=False,H4RSIMin=0.,SkipDow=-1,D1CandleDir=False,SlowSlopeBars=0,MinSepBars=0,D1RSIMin=0.)
 
 @njit(cache=True)
 def rsi_wilder(c,n):
@@ -105,7 +105,7 @@ def zones(h,l,c,atr,Lookback,Pivot,MinT,ZoneATR,BufATR):
 
 @njit(cache=True)
 def simulate(mt,mo,mh,ml,mc,msp,first15,sigB,sigS,atrH,okEntry,maxSpreadATR,tstart,swapLong,swapShort,
-             MaxLevels,StepATR,StepGrow,LotMult,TP_ATR,TPN_ATR,StopATR,cooldownSec,minAddSec,oneSide,BE_ATR,TrailStart,TrailDist,PyrATR,PyrLot,PyrMax,PyrStop):
+             MaxLevels,StepATR,StepGrow,LotMult,TP_ATR,TPN_ATR,StopATR,cooldownSec,minAddSec,oneSide,BE_ATR,TrailStart,TrailDist,PyrATR,PyrLot,PyrMax,PyrStop,stepAbs):
     N=len(mt)
     off=np.zeros(MaxLevels); lotf=np.zeros(MaxLevels)
     for k in range(MaxLevels):
@@ -113,6 +113,12 @@ def simulate(mt,mo,mh,ml,mc,msp,first15,sigB,sigS,atrH,okEntry,maxSpreadATR,tsta
         for i in range(k): s+=StepATR*StepGrow**i
         off[k]=s; lotf[k]=LotMult**k
     stopOff=off[MaxLevels-1]+StopATR
+    offAbs=np.zeros(MaxLevels)      # 固定幅ナンピン(価格の幅)。stepAbs>0 の時に使う
+    for k in range(MaxLevels):
+        s2=0.0
+        for i in range(k): s2+=stepAbs*StepGrow**i
+        offAbs[k]=s2
+    sdist=np.zeros(2); rub=np.zeros(2)
     RU=0.0
     for k in range(MaxLevels): RU+=lotf[k]*(stopOff-off[k])
     rec=np.zeros((300000,10)); nr=0
@@ -130,10 +136,12 @@ def simulate(mt,mo,mh,ml,mc,msp,first15,sigB,sigS,atrH,okEntry,maxSpreadATR,tsta
             prevDay=day
         j=first15[k]
         if j>=0 and t>=cool and t>=tstart and okEntry[j] and atrH[j]>0 and (maxSpreadATR<=0 or sp<=maxSpreadATR*atrH[j]):
+            aj=atrH[j]; sd_=(offAbs[MaxLevels-1] if stepAbs>0 else aj*off[MaxLevels-1])+StopATR*aj; ru_=0.0
+            for kk in range(MaxLevels): ru_+=lotf[kk]*(sd_-(offAbs[kk] if stepAbs>0 else aj*off[kk]))
             if sigB[j]>0 and n[0]==0 and (not oneSide or n[1]==0):
-                n[0]=1; lots[0]=1.0; cost[0]=o+sp; first[0]=o+sp; atrb[0]=atrH[j]; lastAdd[0]=t; tin[0]=t; tag[0]=sigB[j]; swp[0]=0.0; minF[0]=0.0; dyn[0]=o+sp-atrH[j]*stopOff; npyr[0]=0
+                n[0]=1; lots[0]=1.0; cost[0]=o+sp; first[0]=o+sp; atrb[0]=atrH[j]; lastAdd[0]=t; tin[0]=t; tag[0]=sigB[j]; swp[0]=0.0; minF[0]=0.0; sdist[0]=sd_; rub[0]=ru_; dyn[0]=o+sp-sd_; npyr[0]=0
             elif sigS[j]>0 and n[1]==0 and (not oneSide or n[0]==0):
-                n[1]=1; lots[1]=1.0; cost[1]=o; first[1]=o; atrb[1]=atrH[j]; lastAdd[1]=t; tin[1]=t; tag[1]=sigS[j]; swp[1]=0.0; minF[1]=0.0; dyn[1]=o+atrH[j]*stopOff; npyr[1]=0
+                n[1]=1; lots[1]=1.0; cost[1]=o; first[1]=o; atrb[1]=atrH[j]; lastAdd[1]=t; tin[1]=t; tag[1]=sigS[j]; swp[1]=0.0; minF[1]=0.0; sdist[1]=sd_; rub[1]=ru_; dyn[1]=o+sd_; npyr[1]=0
         if n[0]==0 and n[1]==0: continue
         if c>=o: pts[0]=o; pts[1]=l; pts[2]=h; pts[3]=c
         else:    pts[0]=o; pts[1]=h; pts[2]=l; pts[3]=c
@@ -144,7 +152,7 @@ def simulate(mt,mo,mh,ml,mc,msp,first15,sigB,sigS,atrH,okEntry,maxSpreadATR,tsta
                 ex=0.0; et=0
                 if p1<p0:
                     while n[0]<MaxLevels:
-                        lvl=first[0]-atrb[0]*off[n[0]]
+                        lvl=first[0]-(offAbs[n[0]] if stepAbs>0 else atrb[0]*off[n[0]])
                         if p1<=lvl-sp and t-lastAdd[0]>=minAddSec and (maxSpreadATR<=0 or sp<=maxSpreadATR*atrb[0]):
                             fa=min(lvl,p0+sp); cost[0]+=lotf[n[0]]*fa; lots[0]+=lotf[n[0]]; n[0]+=1; lastAdd[0]=t
                             if minAddSec>0: break
@@ -152,7 +160,7 @@ def simulate(mt,mo,mh,ml,mc,msp,first15,sigB,sigS,atrH,okEntry,maxSpreadATR,tsta
                     stop=dyn[0]
                     if p1<=stop: ex=min(stop,p0); et=-1
                     else:
-                        f=(lots[0]*p1-cost[0]-swp[0])/(atrb[0]*RU)
+                        f=(lots[0]*p1-cost[0]-swp[0])/rub[0]
                         if f<minF[0]: minF[0]=f
                 elif p1>p0:
                     # 増し玉(含み益方向に買い増し)
@@ -172,16 +180,16 @@ def simulate(mt,mo,mh,ml,mc,msp,first15,sigB,sigS,atrH,okEntry,maxSpreadATR,tsta
                         if TrailStart>0 and p1-avg>=TrailStart*atrb[0] and p1-TrailDist*atrb[0]>=dyn[0]+0.1*atrb[0]: dyn[0]=p1-TrailDist*atrb[0]
                 if et!=0:
                     pnl=lots[0]*ex-cost[0]-swp[0]
-                    rec[nr,0]=tin[0]; rec[nr,1]=t; rec[nr,2]=1; rec[nr,3]=tag[0]; rec[nr,4]=n[0]; rec[nr,5]=pnl/(atrb[0]*RU)
+                    rec[nr,0]=tin[0]; rec[nr,1]=t; rec[nr,2]=1; rec[nr,3]=tag[0]; rec[nr,4]=n[0]; rec[nr,5]=pnl/rub[0]
                     rec[nr,6]=atrb[0]; rec[nr,7]=first[0]; rec[nr,8]=et; rec[nr,9]=min(minF[0],rec[nr,5]); nr+=1
                     n[0]=0
-                    if et<0 and dyn[0]<=first[0]-atrb[0]*stopOff+1e-9: cool=t+cooldownSec   # 初期の損切りの時だけ休む
+                    if et<0 and dyn[0]<=first[0]-sdist[0]+1e-9: cool=t+cooldownSec   # 初期の損切りの時だけ休む
             # ---- 売りバスケット
             if n[1]>0:
                 ex=0.0; et=0
                 if p1>p0:
                     while n[1]<MaxLevels:
-                        lvl=first[1]+atrb[1]*off[n[1]]
+                        lvl=first[1]+(offAbs[n[1]] if stepAbs>0 else atrb[1]*off[n[1]])
                         if p1>=lvl and t-lastAdd[1]>=minAddSec and (maxSpreadATR<=0 or sp<=maxSpreadATR*atrb[1]):
                             fb=max(lvl,p0); cost[1]+=lotf[n[1]]*fb; lots[1]+=lotf[n[1]]; n[1]+=1; lastAdd[1]=t
                             if minAddSec>0: break
@@ -189,7 +197,7 @@ def simulate(mt,mo,mh,ml,mc,msp,first15,sigB,sigS,atrH,okEntry,maxSpreadATR,tsta
                     stop=dyn[1]
                     if p1+sp>=stop: ex=max(stop,p0+sp); et=-1
                     else:
-                        f=(cost[1]-lots[1]*(p1+sp)-swp[1])/(atrb[1]*RU)
+                        f=(cost[1]-lots[1]*(p1+sp)-swp[1])/rub[1]
                         if f<minF[1]: minF[1]=f
                 elif p1<p0:
                     while npyr[1]<PyrMax and n[1]==1:
@@ -208,10 +216,10 @@ def simulate(mt,mo,mh,ml,mc,msp,first15,sigB,sigS,atrH,okEntry,maxSpreadATR,tsta
                         if TrailStart>0 and avg-a1>=TrailStart*atrb[1] and a1+TrailDist*atrb[1]<=dyn[1]-0.1*atrb[1]: dyn[1]=a1+TrailDist*atrb[1]
                 if et!=0:
                     pnl=cost[1]-lots[1]*ex-swp[1]
-                    rec[nr,0]=tin[1]; rec[nr,1]=t; rec[nr,2]=-1; rec[nr,3]=tag[1]; rec[nr,4]=n[1]; rec[nr,5]=pnl/(atrb[1]*RU)
+                    rec[nr,0]=tin[1]; rec[nr,1]=t; rec[nr,2]=-1; rec[nr,3]=tag[1]; rec[nr,4]=n[1]; rec[nr,5]=pnl/rub[1]
                     rec[nr,6]=atrb[1]; rec[nr,7]=first[1]; rec[nr,8]=et; rec[nr,9]=min(minF[1],rec[nr,5]); nr+=1
                     n[1]=0
-                    if et<0 and dyn[1]>=first[1]+atrb[1]*stopOff-1e-9: cool=t+cooldownSec
+                    if et<0 and dyn[1]>=first[1]+sdist[1]-1e-9: cool=t+cooldownSec
     return rec[:nr],RU,stopOff
 
 class Market:
@@ -327,7 +335,7 @@ class Market:
         msp=self.mo*spreadFrac if self.msp is None else self.msp*spMult+spAdd
         rec,RU,stopOff=simulate(self.mt,self.mo,self.mh,self.ml,self.mc,msp,self.first15,tb,tsl,aJ,okE,maxSpreadATR,tstart,swapLong,swapShort,
             P['MaxLevels'],P['StepATR'],P['StepGrow'],P['LotMult'],P['TP_ATR'],P['TPNanpin_ATR'],P['StopATR'],
-            int(P['CooldownHours']*3600),int(self.sigsec*P['NanpinMinBars']),P['OneSideOnly'],P['BE_ATR'],P['TrailStart_ATR'],P['TrailDist_ATR'],P['PyrATR'],P['PyrLot'],P['PyrMax'],P['PyrStopATR'])
+            int(P['CooldownHours']*3600),int(self.sigsec*P['NanpinMinBars']),P['OneSideOnly'],P['BE_ATR'],P['TrailStart_ATR'],P['TrailDist_ATR'],P['PyrATR'],P['PyrLot'],P['PyrMax'],P['PyrStopATR'],P['StepAbs'])
         d=pd.DataFrame(rec,columns=['tin','tout','dir','tag','n','R','atr','first','exit','minF'])
         return d,RU,stopOff
 

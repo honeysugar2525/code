@@ -4,7 +4,7 @@
 //|   ゴールド(XS セント口座)・BTC(Exness スタンダード) 共用             |
 //+------------------------------------------------------------------+
 #property copyright "NanpinTrio"
-#property version   "1.60"
+#property version   "1.70"
 #property description "遅いMAクロス(75/225)でトレンド方向に入り(RSI・抵抗帯ブレイク・ナンピンは任意でオン)、"
 #property description "広めの損切りと遠い利確で、含み益が乗ったら損切りを建値へ移します。既定値は金の実データ6年分で検証した設定です。"
 #property description "幅はすべてATR基準なので、ゴールドでもBTCでも同じ設定で動きます。"
@@ -64,12 +64,13 @@ input int             TrendSlopeBars    = 6;           // EMAの傾きを確認�
 input int             DailyMAPeriod     = 60;          // 日足EMAの期間(0=無効)。日足EMAより上なら買いだけ、下なら売りだけ
 
 //--- ナンピン
-input group "◎ ナンピン(幅は ATR × 倍率)"
-input int             MaxLevels         = 1;           // 最大ポジション数(1=ナンピンなし。実データではナンピンは逆効果)
+input group "◎ ナンピン(MaxLevels=1 ならナンピンなし)"
+input int             MaxLevels         = 1;           // 最大ポジション数=エントリーする本数の上限(1=ナンピンなし)
 input ENUM_TIMEFRAMES GridTF            = PERIOD_H1;   // 幅の基準にするATRの足
 input int             GridATRPeriod     = 14;          // ATR期間
-input double          StepATR           = 0.5;         // ナンピン幅(1回目)
-input double          StepGrow          = 1.3;         // ナンピン幅の拡大率(回ごと)
+input double          StepPrice         = 0.0;         // ナンピン幅を価格で固定(金なら 3.5 = 3.5ドル。0=下のATR倍率を使う)
+input double          StepATR           = 0.5;         // ナンピン幅(1回目, ATRの倍率。StepPrice=0 の時だけ使う)
+input double          StepGrow          = 1.3;         // ナンピン幅の拡大率(回ごと。3.5→4.55→5.9…)
 input double          LotMult           = 1.5;         // ロット倍率(回ごと)
 input int             NanpinMinBars     = 1;           // ナンピン同士の最低間隔(シグナル足の本数)
 input double          TP_ATR            = 8.0;         // 利確幅(初回のみ保有時)
@@ -177,26 +178,28 @@ bool SpreadOK(double atr)
   }
 
 //+------------------------------------------------------------------+
-//| グリッドの形(すべて ATR 倍率)                                     |
+//| グリッドの形(価格の幅で返す)                                     |
 //+------------------------------------------------------------------+
-// 初回建値から k 本目(0始まり)のエントリーまでの距離
-double LevelOffset(int k)
+// 初回建値から k 本目(0始まり)のエントリーまでの距離(価格の幅)
+// StepPrice>0 なら固定幅、0 なら ATR × StepATR。どちらも回ごとに StepGrow 倍
+double LevelDist(int k,double atr)
   {
+   double step=(StepPrice>0.0) ? StepPrice : StepATR*atr;
    double off=0.0;
    for(int i=0;i<k;i++)
-      off+=StepATR*MathPow(StepGrow,i);
+      off+=step*MathPow(StepGrow,i);
    return off;
   }
 
-// 初回建値から損切りラインまでの距離
-double StopOffset() { return LevelOffset(MaxLevels-1)+StopATR; }
+// 初回建値から損切りラインまでの距離(価格の幅)
+double StopDist(double atr) { return LevelDist(MaxLevels-1,atr)+StopATR*atr; }
 
-// 全段入って損切りになった時の損失(初回1ロットあたり, ATR×ロット単位)
-double RiskUnits()
+// 全段入って損切りになった時の損失(初回1ロットあたり, 価格の幅×ロット倍率)
+double RiskDist(double atr)
   {
-   double u=0.0, stop=StopOffset();
+   double u=0.0, stop=StopDist(atr);
    for(int k=0;k<MaxLevels;k++)
-      u+=MathPow(LotMult,k)*(stop-LevelOffset(k));
+      u+=MathPow(LotMult,k)*(stop-LevelDist(k,atr));
    return u;
   }
 
@@ -243,7 +246,7 @@ double CalcBaseLot(double atr,bool &tooSmall)
    tooSmall=false;
    if(FixedBaseLot>0.0)
       return NormLot(FixedBaseLot,false);
-   double perLot=MoneyPerLot(atr*RiskUnits());
+   double perLot=MoneyPerLot(RiskDist(atr));
    if(perLot<=0.0)
       return 0.0;
    double raw=AccountInfoDouble(ACCOUNT_BALANCE)*BasketRiskPct/100.0/perLot;
@@ -264,7 +267,7 @@ double EstRiskPct(double lot,double atr)
    double bal=AccountInfoDouble(ACCOUNT_BALANCE);
    if(bal<=0.0)
       return 0.0;
-   return MoneyPerLot(atr*RiskUnits())*lot/bal*100.0;
+   return MoneyPerLot(RiskDist(atr))*lot/bal*100.0;
   }
 
 //+------------------------------------------------------------------+
@@ -457,7 +460,7 @@ void ManageBasket(ENUM_POSITION_TYPE type)
    double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
    double exitPx=(type==POSITION_TYPE_BUY) ? bid : ask;   // 決済される側の価格
    double addPx =(type==POSITION_TYPE_BUY) ? ask : bid;   // 追加で建つ側の価格
-   double baseStop=b.firstPrice-dir*atrb*StopOffset();
+   double baseStop=b.firstPrice-dir*StopDist(atrb);
    double stopPrice=CurrentStop(type,baseStop);
    double tpPrice=b.avg+dir*atrb*((b.n<=1) ? TP_ATR : TPNanpin_ATR);
    g_stopMoved[ix]=((stopPrice-baseStop)*dir>_Point*0.5);
@@ -498,7 +501,7 @@ void ManageBasket(ENUM_POSITION_TYPE type)
    // ナンピン
    if(b.n<MaxLevels && !g_halted)
      {
-      double levelPrice=b.firstPrice-dir*atrb*LevelOffset(b.n);
+      double levelPrice=b.firstPrice-dir*LevelDist(b.n,atrb);
       bool reach=(dir>0.0) ? (addPx<=levelPrice) : (addPx>=levelPrice);
       long minGap=(long)PeriodSeconds(SignalTF)*MathMax(0,NanpinMinBars);
       if(reach && (long)(TimeCurrent()-b.lastTime)>=minGap && TimeCurrent()-g_lastAddTry[ix]>=5 && SpreadOK(atrb))
@@ -837,14 +840,14 @@ string BasketLine(ENUM_POSITION_TYPE type,string label)
    string key=GVName(AtrKey(type));
    double atrb=GlobalVariableCheck(key) ? GlobalVariableGet(key) : GridATR();
    double dir=(type==POSITION_TYPE_BUY) ? 1.0 : -1.0;
-   double baseStop=b.firstPrice-dir*atrb*StopOffset();
+   double baseStop=b.firstPrice-dir*StopDist(atrb);
    double stopPrice=CurrentStop(type,baseStop);
    bool moved=((stopPrice-baseStop)*dir>_Point*0.5);
    double tpPrice=b.avg+dir*atrb*((b.n<=1) ? TP_ATR : TPNanpin_ATR);
    string txt=label+": "+IntegerToString(b.n)+"/"+IntegerToString(MaxLevels)+"段  "+DoubleToString(b.lots,2)+"ロット  含み "+DoubleToString(b.profit,2)+"\n";
    txt+="   平均 "+DoubleToString(b.avg,_Digits)+"  利確 "+DoubleToString(tpPrice,_Digits)+"  損切り "+DoubleToString(stopPrice,_Digits)+(moved ? "(引き上げ済み)" : "")+"\n";
    if(b.n<MaxLevels)
-      txt+="   次のナンピン "+DoubleToString(b.firstPrice-dir*atrb*LevelOffset(b.n),_Digits)+"\n";
+      txt+="   次のナンピン "+DoubleToString(b.firstPrice-dir*LevelDist(b.n,atrb),_Digits)+"\n";
    return txt;
   }
 
@@ -867,7 +870,7 @@ void UpdatePanel()
    if(tooSmall)
       txt+="  ※残高が小さく設定%を超えています";
    txt+="\n";
-   txt+="ATR "+DoubleToString(atr,_Digits)+"  損切りまで "+DoubleToString(atr*StopOffset(),_Digits)+"  日足ATR "+DoubleToString(g_dayVol,2)+"%"+((MinDailyATRpct>0.0) ? ((g_dayVol>=MinDailyATRpct) ? "(稼働)" : "(待機)") : "")+"\n";
+   txt+="ATR "+DoubleToString(atr,_Digits)+"  損切りまで "+DoubleToString(StopDist(atr),_Digits)+"  日足ATR "+DoubleToString(g_dayVol,2)+"%"+((MinDailyATRpct>0.0) ? ((g_dayVol>=MinDailyATRpct) ? "(稼働)" : "(待機)") : "")+"\n";
    txt+="抵抗帯 "+((g_resLevel>0.0) ? DoubleToString(g_resLevel,_Digits) : "-")+"  支持帯 "+((g_supLevel>0.0) ? DoubleToString(g_supLevel,_Digits) : "-")+"\n";
    txt+="直近シグナル: "+g_lastSignal+"\n";
    if(g_lastNote!="")
@@ -887,7 +890,7 @@ int OnInit()
       Alert("NanpinTrio: ヘッジ口座専用です(この口座はネッティング方式のため動かせません)");
       return INIT_FAILED;
      }
-   if(MaxLevels<1 || MaxLevels>15 || LotMult<1.0 || StepATR<=0.0 || StepGrow<=0.0 || StopATR<=0.0 ||
+   if(MaxLevels<1 || MaxLevels>15 || LotMult<1.0 || StepATR<=0.0 || StepPrice<0.0 || StepGrow<=0.0 || StopATR<=0.0 ||
       TP_ATR<=0.0 || TPNanpin_ATR<=0.0 || MA_Fast<1 || MA_Slow<=MA_Fast || RSI_Period<2 ||
       BO_Pivot<1 || BO_Lookback<BO_Pivot*2+10 || BO_MinTouches<1 || TrendMAPeriod<2 || GridATRPeriod<2 ||
       TrendSlopeBars<0 || BE_ATR<0.0 || TrailStart_ATR<0.0 || (TrailStart_ATR>0.0 && TrailDist_ATR<=0.0) ||
